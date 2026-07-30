@@ -271,6 +271,44 @@ body.narrow #preview{max-width:720px}
 .tok-meta{color:var(--t-meta)}
 
 /* ============================================================
+   WYSIWYG EDIT MODE
+   ============================================================ */
+#edBadge{
+  display:none; font-size:10px; letter-spacing:.4px; text-transform:uppercase;
+  color:var(--accent); border:1px solid var(--accent); border-radius:10px;
+  padding:1px 7px; background:var(--accent-soft);
+}
+body.edit #edBadge{display:inline-block}
+#preview .ed{ border-radius:4px; transition:background .1s, box-shadow .1s; }
+#preview .ed:hover{ background:var(--accent-soft); box-shadow:0 0 0 4px var(--accent-soft); }
+#preview .ed:focus{
+  outline:2px solid var(--accent); outline-offset:3px;
+  background:transparent; box-shadow:none;
+}
+#preview td.ed, #preview th.ed{ border-radius:0 }
+#preview td.ed:hover, #preview th.ed:hover{ box-shadow:inset 0 0 0 1px var(--accent) }
+#preview td.ed:focus, #preview th.ed:focus{ outline-offset:-2px }
+#preview pre[data-code] > code.ed:focus{ outline-offset:6px }
+#preview p.ed:empty{ min-height:1.5em }
+#preview span.itx.ed:empty{ display:inline-block; min-width:3px; min-height:1.2em; vertical-align:text-bottom }
+body.edit #preview li.task input{ cursor:pointer }
+body.edit #preview .anchor{ display:none }
+body.edit #preview a{ cursor:text }
+
+#tblBar{
+  position:absolute; z-index:30; display:none; gap:1px; padding:3px;
+  background:var(--bg-elev); border:1px solid var(--border);
+  border-radius:8px; box-shadow:var(--shadow); white-space:nowrap;
+}
+#tblBar.on{display:flex; align-items:center}
+#tblBar button{
+  font:inherit; font-size:11px; line-height:1; padding:6px 8px; border-radius:5px;
+  border:1px solid transparent; background:transparent; color:var(--fg-dim); cursor:pointer;
+}
+#tblBar button:hover{background:var(--accent-soft); color:var(--accent)}
+#tblBar .div{width:1px; align-self:stretch; background:var(--border); margin:3px 4px}
+
+/* ============================================================
    OUTLINE DRAWER
    ============================================================ */
 #toc{
@@ -315,7 +353,8 @@ body.narrow #preview{max-width:720px}
    ============================================================ */
 @media print{
   body{overflow:visible;display:block;background:#fff;color:#000}
-  #bar,#leftPane,#gutterDrag,#toc,#drop,#toast,.pane-head{display:none!important}
+  #bar,#leftPane,#gutterDrag,#toc,#drop,#toast,#tblBar,.pane-head{display:none!important}
+  #preview .ed{outline:none!important;background:none!important;box-shadow:none!important}
   #main{display:block} #rightPane{display:block}
   #prevScroll{overflow:visible}
   #preview{max-width:none;padding:0;color:#000}
@@ -366,6 +405,7 @@ body.narrow #preview{max-width:720px}
 
   <span class="sep"></span>
 
+  <button class="btn on" id="bEdit" title="Type directly in the preview — changes are written back to the markdown">Edit&nbsp;preview</button>
   <button class="btn" id="bToc" title="Outline">Outline</button>
   <button class="btn on" id="bSync" title="Sync scrolling between panes">Sync</button>
   <button class="btn" id="bWrap" title="Word wrap in the editor">Wrap</button>
@@ -392,8 +432,21 @@ body.narrow #preview{max-width:720px}
   <div id="gutterDrag"></div>
 
   <div id="rightPane">
-    <div class="pane-head">Preview <span class="mini" id="rstats"></span></div>
+    <div class="pane-head">Preview <span id="edBadge">editable</span> <span class="mini" id="rstats"></span></div>
     <div id="prevScroll"><article id="preview"></article></div>
+    <div id="tblBar">
+      <button data-op="rowAbove" title="Insert row above">&#8593;Row</button>
+      <button data-op="rowBelow" title="Insert row below">&#8595;Row</button>
+      <button data-op="rowDel" title="Delete this row">&#10005;Row</button>
+      <span class="div"></span>
+      <button data-op="colLeft" title="Insert column left">&#8592;Col</button>
+      <button data-op="colRight" title="Insert column right">&#8594;Col</button>
+      <button data-op="colDel" title="Delete this column">&#10005;Col</button>
+      <span class="div"></span>
+      <button data-op="alignL" title="Align column left">&#8676;</button>
+      <button data-op="alignC" title="Center column">&#8703;</button>
+      <button data-op="alignR" title="Align column right">&#8677;</button>
+    </div>
     <nav id="toc"><h4>Outline</h4><div id="tocList"></div></nav>
   </div>
 </div>
@@ -562,11 +615,22 @@ const MD = (function(){
            (OPT.allowHtml && RE.htmlOpen.test(l));
   }
 
-  function parseBlocks(lines, top){
+  function parseBlocks(lines, top, map){
+    if(!map) map = lines.map((_, k) => k);
+    // source range of local lines [a..b] as data attributes
+    const rng = (a, b) => {
+      let s = -1, e = -1;
+      for(let k = a; k <= b && k < map.length; k++){
+        const o = map[k];
+        if(o != null && o >= 0){ if(s < 0) s = o; e = o; }
+      }
+      return s < 0 ? '' : ' data-ls="' + s + '" data-le="' + e + '"';
+    };
     let out = [], i = 0;
 
     while(i < lines.length){
       let line = lines[i];
+      const st = i;
 
       if(RE.blank.test(line)){ i++; continue; }
 
@@ -577,19 +641,25 @@ const MD = (function(){
         const info = (m[3] || '').trim();
         const lang = info.split(/\s+/)[0].replace(/[{}.,]/g,'');
         let buf = []; i++;
+        const cs = i; let ce = i - 1;
         while(i < lines.length){
           const c = lines[i];
           const cm = c.match(/^( {0,3})(`{3,}|~{3,})[ \t]*$/);
           if(cm && cm[2][0] === marker && cm[2].length >= len){ i++; break; }
           buf.push(c.slice(0, indent).trim() === '' ? c.slice(indent) : c);
-          i++;
+          ce = i; i++;
+        }
+        let at = buf.length ? rng(cs, ce) : '';
+        if(!at){ // empty body: remember the insertion point (le < ls)
+          const after = (map[st] != null && map[st] >= 0) ? map[st] + 1 : -1;
+          if(after >= 0) at = ' data-ls="' + after + '" data-le="' + (after - 1) + '"';
         }
         const code = buf.join('\n');
         if(/^mermaid$/i.test(lang)){
-          out.push('<div class="mermaid-box" data-mermaid="' + esc(code) + '"><pre><code>' + esc(code) + '</code></pre></div>');
+          out.push('<div class="mermaid-box"' + at + ' data-mermaid="' + esc(code) + '"><pre><code>' + esc(code) + '</code></pre></div>');
         } else {
           const body = OPT.highlight ? OPT.highlight(code, lang) : esc(code);
-          out.push('<pre data-lang="' + esc(lang) + '"><span class="lang">' + esc(lang || 'text') +
+          out.push('<pre data-lang="' + esc(lang) + '" data-code="1"' + at + '><span class="lang">' + esc(lang || 'text') +
                    '</span><button class="cpy" type="button">Copy</button><code class="language-' + esc(lang) + '">' + body + '</code></pre>');
         }
         continue;
@@ -603,30 +673,30 @@ const MD = (function(){
         const html = inline(raw);
         const id = slug(raw || 'heading');
         if(top) headings.push({ level:lvl, text:raw.replace(/<[^>]*>/g,''), id });
-        out.push('<h' + lvl + ' id="' + id + '"><a class="anchor" href="#' + id + '" aria-hidden="true">#</a>' + html + '</h' + lvl + '>');
+        out.push('<h' + lvl + ' id="' + id + '"' + rng(st, st) + '><a class="anchor" href="#' + id + '" aria-hidden="true">#</a>' + html + '</h' + lvl + '>');
         i++; continue;
       }
 
       // ---- thematic break
-      if(RE.hr.test(line)){ out.push('<hr>'); i++; continue; }
+      if(RE.hr.test(line)){ out.push('<hr' + rng(st, st) + '>'); i++; continue; }
 
       // ---- blockquote (with GFM callouts)
       if(RE.quote.test(line)){
-        let buf = [];
+        let buf = [], bmap = [];
         while(i < lines.length && (RE.quote.test(lines[i]) ||
               (!RE.blank.test(lines[i]) && buf.length && !isBlockStart(lines[i])))){
-          buf.push(lines[i].replace(RE.quote, ''));
+          buf.push(lines[i].replace(RE.quote, '')); bmap.push(map[i]);
           i++;
         }
         const cm = buf[0] && buf[0].match(/^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION|DANGER|INFO)\]\s*(.*)$/i);
         if(cm){
           const kind = cm[1].toLowerCase();
           buf[0] = cm[2] || '';
-          const inner = parseBlocks(buf, false);
+          const inner = parseBlocks(buf, false, bmap);
           const label = cm[1].charAt(0) + cm[1].slice(1).toLowerCase();
           out.push('<div class="cb ' + kind + '"><div class="cb-t">' + esc(label) + '</div>' + inner + '</div>');
         } else {
-          out.push('<blockquote>' + parseBlocks(buf, false) + '</blockquote>');
+          out.push('<blockquote>' + parseBlocks(buf, false, bmap) + '</blockquote>');
         }
         continue;
       }
@@ -666,7 +736,7 @@ const MD = (function(){
             const content = ordered ? marker[5] : marker[4];
             const markLen = ordered ? (marker[1].length + marker[2].length + 1 + marker[3].length)
                                     : (marker[1].length + 1 + marker[3].length);
-            items.push({ lines:[content], pad:markLen, blank:false });
+            items.push({ lines:[content], map:[map[i]], pad:markLen, blank:false });
             i++; continue;
           }
           if(isOtherType) break;         // different list type at same level → new list
@@ -674,13 +744,20 @@ const MD = (function(){
           if(lIndent > baseIndent || /^\s/.test(l)){
             const it = items[items.length - 1];
             const strip = Math.min(it.pad, /^(\s*)/.exec(l)[1].length);
-            it.lines.push(l.slice(strip));
-            if(sawBlank){ it.lines.splice(it.lines.length - 1, 0, ''); loose = true; sawBlank = false; }
+            it.lines.push(l.slice(strip)); it.map.push(map[i]);
+            if(sawBlank){
+              it.lines.splice(it.lines.length - 1, 0, '');
+              it.map.splice(it.map.length - 1, 0, -1);
+              loose = true; sawBlank = false;
+            }
             i++; continue;
           }
           if(isBlockStart(l)) break;
           // lazy continuation of the paragraph inside the item
-          if(!sawBlank){ items[items.length - 1].lines.push(l); i++; continue; }
+          if(!sawBlank){
+            const it = items[items.length - 1];
+            it.lines.push(l); it.map.push(map[i]); i++; continue;
+          }
           break;
         }
 
@@ -691,11 +768,12 @@ const MD = (function(){
           const tm = body.match(/^\[([ xX])\][ \t]+([\s\S]*)$/);
           if(tm){
             cls = ' class="task"';
-            box = '<input type="checkbox" disabled' + (tm[1].toLowerCase() === 'x' ? ' checked' : '') + '>';
+            box = '<input type="checkbox" data-tls="' + (it.map[0] != null && it.map[0] >= 0 ? it.map[0] : -1) +
+                  '" disabled' + (tm[1].toLowerCase() === 'x' ? ' checked' : '') + '>';
             body = tm[2];
           }
-          let inner = parseBlocks(body.split('\n'), false);
-          if(!loose) inner = inner.replace(/^<p>([\s\S]*?)<\/p>\s*/, '$1');
+          let inner = parseBlocks(body.split('\n'), false, it.map.slice());
+          if(!loose) inner = inner.replace(/^<p([^>]*)>([\s\S]*?)<\/p>\s*/, '<span class="itx"$1>$2</span>');
           html += '<li' + cls + '>' + box + inner + '</li>';
         }
         out.push(ordered
@@ -723,24 +801,27 @@ const MD = (function(){
           const l = c.charAt(0) === ':', r = c.charAt(c.length-1) === ':';
           return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
         });
+        const hLine = map[i], sLine = map[i+1];
+        const cellAt = (l, k) => (l != null && l >= 0) ? ' data-ls="' + l + '" data-ci="' + k + '"' : '';
         i += 2;
-        let body = '';
+        let body = '', last = st + 1;
         while(i < lines.length && !RE.blank.test(lines[i]) && lines[i].indexOf('|') !== -1 && !RE.fence.test(lines[i])){
-          const cells = splitRow(lines[i]);
-          body += '<tr>' + head.map((_, k) =>
-            '<td' + (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : '') + '>' + inline(cells[k] || '') + '</td>'
+          const cells = splitRow(lines[i]), rl = map[i];
+          body += '<tr' + (rl >= 0 ? ' data-ls="' + rl + '"' : '') + '>' + head.map((_, k) =>
+            '<td' + (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : '') + cellAt(rl, k) + '>' + inline(cells[k] || '') + '</td>'
           ).join('') + '</tr>';
-          i++;
+          last = i; i++;
         }
-        out.push('<table><thead><tr>' + head.map((h, k) =>
-            '<th' + (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : '') + '>' + inline(h) + '</th>').join('') +
+        out.push('<table' + rng(st, last) + (sLine >= 0 ? ' data-sep="' + sLine + '"' : '') +
+          '><thead><tr' + (hLine >= 0 ? ' data-ls="' + hLine + '"' : '') + '>' + head.map((h, k) =>
+            '<th' + (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : '') + cellAt(hLine, k) + '>' + inline(h) + '</th>').join('') +
           '</tr></thead>' + (body ? '<tbody>' + body + '</tbody>' : '') + '</table>');
         continue;
       }
 
       // ---- indented code block (4 spaces / tab), only if not continuing a paragraph
       if(/^(?: {4}|\t)/.test(line)){
-        let buf = [];
+        let buf = [], last = i;
         while(i < lines.length && (/^(?: {4}|\t)/.test(lines[i]) || RE.blank.test(lines[i]))){
           if(RE.blank.test(lines[i])){
             // stop if the blank run ends the block
@@ -750,9 +831,9 @@ const MD = (function(){
             i = j; continue;
           }
           buf.push(lines[i].replace(/^(?: {4}|\t)/, ''));
-          i++;
+          last = i; i++;
         }
-        out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>');
+        out.push('<pre data-code="1" data-indent="1"' + rng(st, last) + '><code>' + esc(buf.join('\n')) + '</code></pre>');
         continue;
       }
 
@@ -773,14 +854,14 @@ const MD = (function(){
           const raw = buf.join(' ').trim();
           const id = slug(raw);
           if(top) headings.push({ level:lvl, text:raw.replace(/<[^>]*>/g,''), id });
-          out.push('<h' + lvl + ' id="' + id + '"><a class="anchor" href="#' + id + '" aria-hidden="true">#</a>' + inline(raw) + '</h' + lvl + '>');
+          out.push('<h' + lvl + ' id="' + id + '"' + rng(st, i) + ' data-setext="1"><a class="anchor" href="#' + id + '" aria-hidden="true">#</a>' + inline(raw) + '</h' + lvl + '>');
           buf = null; i++; break;
         }
         if(buf.length && (RE.fence.test(l) || RE.atx.test(l) || RE.hr.test(l) || RE.quote.test(l) ||
                           RE.ul.test(l) || RE.ol.test(l))) break;
         buf.push(l); i++;
       }
-      if(buf && buf.length) out.push('<p>' + inline(buf.join('\n')) + '</p>');
+      if(buf && buf.length) out.push('<p' + rng(st, i - 1) + '>' + inline(buf.join('\n')) + '</p>');
     }
     return out.join('\n');
   }
@@ -801,13 +882,15 @@ const MD = (function(){
         return k ? '<b>' + esc(k[1]) + ':</b> ' + esc(k[2]) : esc(l);
       });
       pre = '<div class="fm">' + rows.join('<br>') + '</div>';
-      text = text.slice(fm[0].length);
+      // keep line numbering aligned with the real source by padding with blanks
+      const consumed = fm[0].split('\n').length - 1;
+      text = '\n'.repeat(consumed) + text.slice(fm[0].length);
     }
 
     let lines = text.split('\n');
 
     // pull out link reference definitions + footnote definitions (outside fences)
-    const kept = [];
+    const kept = [], keptMap = [];
     let inFence = false, fenceCh = '';
     for(let i = 0; i < lines.length; i++){
       const l = lines[i];
@@ -815,9 +898,9 @@ const MD = (function(){
       if(f){
         if(!inFence){ inFence = true; fenceCh = f[2][0]; }
         else if(f[2][0] === fenceCh){ inFence = false; }
-        kept.push(l); continue;
+        kept.push(l); keptMap.push(i); continue;
       }
-      if(inFence){ kept.push(l); continue; }
+      if(inFence){ kept.push(l); keptMap.push(i); continue; }
 
       const fn = l.match(RE.fndef);
       if(fn){
@@ -831,17 +914,18 @@ const MD = (function(){
       }
       const rd = l.match(RE.refdef);
       if(rd && !/^\s*\|/.test(l)){ refs[rd[1].toLowerCase()] = { url: rd[2], title: rd[3] || '' }; continue; }
-      kept.push(l);
+      kept.push(l); keptMap.push(i);
     }
 
-    let html = pre + parseBlocks(kept, true);
+    let html = pre + parseBlocks(kept, true, keptMap);
 
     // footnote section, ordered by first reference
     if(fnOrder.length){
       const map = {}; footnotes.forEach(f => map[f.label] = f);
       const items = fnOrder.map(lbl => {
         const f = map[lbl];
-        const body = f ? parseBlocks(f.src.split('\n'), false) : '<p><em>missing footnote</em></p>';
+        const body = f ? parseBlocks(f.src.split('\n'), false, f.src.split('\n').map(() => -1))
+                       : '<p><em>missing footnote</em></p>';
         return '<li id="fn-' + esc(lbl) + '">' + body.replace(/<\/p>\s*$/, ' <a href="#fnref-' + esc(lbl) + '">&#8617;</a></p>') + '</li>';
       });
       html += '<section class="footnotes"><ol>' + items.join('') + '</ol></section>';
@@ -1036,7 +1120,7 @@ const HL = (function(){
   let dirty = false;
   let lastHtml = '';
   const state = {
-    sync: true, wrap: false, hlSrc: true, allowHtml: false,
+    sync: true, wrap: false, hlSrc: true, allowHtml: false, edit: true,
     theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark'
   };
 
@@ -1047,6 +1131,29 @@ const HL = (function(){
   };
 
   /* ---------- toast ---------- */
+  // clipboard, with a fallback for browsers that block the async API on file://
+  function copyText(text){
+    const done = () => true;
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        return navigator.clipboard.writeText(text).then(done, legacyCopy);
+      }
+    } catch(err){}
+    return Promise.resolve(legacyCopy());
+    function legacyCopy(){
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        return true;
+      } catch(err){ return false; }
+    }
+  }
+
   let toastT;
   function toast(msg){
     const t = $('toast'); t.textContent = msg; t.classList.add('on');
@@ -1083,6 +1190,8 @@ const HL = (function(){
     buildToc(res.headings);
     renderMermaid();
     updateStats();
+    applyEditMode();
+    focusPending();
   }
 
   function scheduleRender(){
@@ -1139,6 +1248,11 @@ const HL = (function(){
   });
   preview.addEventListener('click', e => {
     const a = e.target.closest('a');
+    // in edit mode links are text — ctrl/cmd-click to actually follow one
+    if(a && state.edit && !e.ctrlKey && !e.metaKey && a.getAttribute('href') &&
+       a.getAttribute('href').charAt(0) !== '#'){
+      e.preventDefault(); return;
+    }
     if(a && a.getAttribute('href') && a.getAttribute('href').charAt(0) === '#'){
       e.preventDefault();
       const el = preview.querySelector('#' + CSS.escape(a.getAttribute('href').slice(1)));
@@ -1148,9 +1262,8 @@ const HL = (function(){
     const c = e.target.closest('.cpy');
     if(c){
       const code = c.parentElement.querySelector('code');
-      navigator.clipboard.writeText(code.textContent).then(() => {
-        c.textContent = 'Copied'; setTimeout(() => c.textContent = 'Copy', 1200);
-      });
+      copyText(code.textContent);
+      c.textContent = 'Copied'; setTimeout(() => { c.textContent = 'Copy'; }, 1200);
     }
   });
 
@@ -1345,6 +1458,7 @@ const HL = (function(){
   };
 
   async function save(){
+    commitActive();
     const text = editor.value;
     if(fileHandle && fileHandle.createWritable){
       try {
@@ -1394,10 +1508,11 @@ const HL = (function(){
   }
   $('selExport').onchange = e => {
     const v = e.target.value; e.target.value = '';
+    commitActive();
     if(v === 'html') download(fileName.replace(/\.[^.]+$/, '') + '.html', standaloneHtml(), 'text/html');
     else if(v === 'pdf') window.print();
-    else if(v === 'chtml') navigator.clipboard.writeText(lastHtml).then(() => toast('Rendered HTML copied'));
-    else if(v === 'ctext') navigator.clipboard.writeText(preview.innerText).then(() => toast('Plain text copied'));
+    else if(v === 'chtml'){ copyText(lastHtml); toast('Rendered HTML copied'); }
+    else if(v === 'ctext'){ copyText(preview.innerText || preview.textContent); toast('Plain text copied'); }
   };
 
   /* ---------- drag & drop ---------- */
@@ -1460,6 +1575,613 @@ const HL = (function(){
     g.addEventListener('dblclick', () => { left.style.flexBasis = '50%'; LS.set('split', 50); });
   })();
 
+  /* ======================================================================
+     WYSIWYG PREVIEW EDITING
+     Every block carries data-ls / data-le (source line range), so an edit
+     rewrites only those lines and leaves the rest of the file untouched.
+     ====================================================================== */
+  const EDITABLE = 'p[data-ls],h1[data-ls],h2[data-ls],h3[data-ls],h4[data-ls],h5[data-ls],' +
+                   'h6[data-ls],span.itx[data-ls],td[data-ls],th[data-ls],pre[data-code]>code';
+  const PFX_Q  = /^([ \t]*(?:>[ \t]?)+(?:\[![A-Za-z]+\][ \t]*)?)/;
+  const PFX_H  = /^([ \t]*#{1,6}[ \t]+)/;
+  const PFX_LI = /^([ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)/;
+
+  let pending = null, lastCell = null, commitT = null;
+
+  function srcLines(){ return editor.value.split('\n'); }
+
+  function applyLines(lines){
+    const text = lines.join('\n');
+    editor.value = text;
+    lastLineCount = -1;
+    paintLineNums(); schedulePaint(); updateStats(); setDirty(true);
+    LS.set('doc', text.length < 400000 ? text : ''); LS.set('docName', fileName);
+  }
+
+  // replace source lines [ls..le] (le < ls means "insert at ls") and keep other blocks' maps valid
+  function spliceSource(ls, le, newLines, host, skipShift){
+    const lines = srcLines();
+    const count = Math.max(0, le - ls + 1);
+    lines.splice(ls, count, ...newLines);
+    const delta = newLines.length - count;
+    applyLines(lines);
+    if(skipShift) return;
+    if(delta){
+      preview.querySelectorAll('[data-ls]').forEach(n => {
+        if(n === host) return;
+        const a = +n.dataset.ls, b = +n.dataset.le;
+        if(isFinite(a) && a > le){
+          n.dataset.ls = a + delta;
+          if(isFinite(b)) n.dataset.le = b + delta;
+        } else if(isFinite(a) && isFinite(b) && a < ls && b >= ls){
+          n.dataset.le = b + delta;                       // block that really encloses the edit
+        }
+      });
+    }
+    if(host){ host.dataset.ls = ls; host.dataset.le = ls + newLines.length - 1; }
+  }
+
+  /* ---------- HTML → markdown (inline level) ---------- */
+  function mdEsc(t, inTable){
+    // HTML collapses newlines to spaces — only <br> is a real line break
+    let s = String(t).replace(/ /g, ' ').replace(/\s*\n\s*/g, ' ').replace(/([\\`*\[\]])/g, '\\$1');
+    if(inTable) s = s.replace(/\|/g, '\\|');
+    return s;
+  }
+  function ser(node, inTable){
+    let out = '';
+    node.childNodes.forEach(n => {
+      if(n.nodeType === 3){ out += mdEsc(n.nodeValue, inTable); return; }
+      if(n.nodeType !== 1) return;
+      if(n.classList && (n.classList.contains('anchor') || n.classList.contains('lang') || n.classList.contains('cpy'))) return;
+      const t = n.tagName.toLowerCase();
+      const kids = () => ser(n, inTable);
+      let c;
+      switch(t){
+        case 'strong': case 'b': c = kids(); out += c.trim() ? '**' + c + '**' : c; break;
+        case 'em': case 'i':     c = kids(); out += c.trim() ? '*' + c + '*' : c; break;
+        case 'del': case 's': case 'strike': c = kids(); out += c.trim() ? '~~' + c + '~~' : c; break;
+        case 'mark': c = kids(); out += c.trim() ? '==' + c + '==' : c; break;
+        case 'code': {
+          let x = n.textContent.replace(/\n/g, ' ').replace(/`/g, '');
+          out += x ? '`' + x + '`' : '';
+          break;
+        }
+        case 'br': out += '\n'; break;
+        case 'u': out += '<u>' + kids() + '</u>'; break;
+        case 'kbd': out += '<kbd>' + kids() + '</kbd>'; break;
+        case 'input': break;
+        case 'img': {
+          const alt = n.getAttribute('alt') || '', src = n.getAttribute('src') || '';
+          out += '![' + alt + '](' + src + (n.title ? ' "' + n.title + '"' : '') + ')';
+          break;
+        }
+        case 'sup':
+          if(n.classList.contains('fnref')) out += '[^' + (n.id || '').replace(/^fnref-/, '') + ']';
+          else { c = kids(); out += c ? '^' + c + '^' : ''; }
+          break;
+        case 'a': {
+          const href = n.getAttribute('href') || '';
+          c = kids();
+          if(!href){ out += c; break; }
+          if(c && (href === c || href === 'https://' + c || href === 'mailto:' + c)){ out += c; break; }
+          out += c ? '[' + c + '](' + href + (n.title ? ' "' + n.title + '"' : '') + ')' : '';
+          break;
+        }
+        default: out += kids();
+      }
+    });
+    return out;
+  }
+
+  /* ---------- prefixes, wrapping ---------- */
+  function prefixOf(line, kind){
+    line = line || '';
+    const q = line.match(PFX_Q);
+    const quote = q ? q[1] : '';
+    const rest = line.slice(quote.length);
+    let body;
+    if(kind === 'h'){ const m = rest.match(PFX_H); body = m ? m[1] : (rest.match(/^[ \t]*/) || [''])[0]; }
+    else if(kind === 'li'){ const m = rest.match(PFX_LI); body = m ? m[1] : (rest.match(/^[ \t]*/) || [''])[0]; }
+    else body = (rest.match(/^[ \t]*/) || [''])[0];
+    return { quote, pfx: quote + body };
+  }
+  function wrapText(t, width){
+    if(width < 20 || t.length <= width) return [t];
+    const words = t.split(/ +/), lines = [];
+    let cur = '';
+    for(const w of words){
+      if(!cur) cur = w;
+      else if((cur + ' ' + w).length <= width) cur += ' ' + w;
+      else { lines.push(cur); cur = w; }
+    }
+    if(cur) lines.push(cur);
+    return lines.length ? lines : [''];
+  }
+
+  /* ---------- table row helpers ---------- */
+  function rowParts(line){
+    const m = (line || '').match(/^([ \t]*(?:>[ \t]?)*[ \t]*)([\s\S]*)$/);
+    let lead = m[1], body = m[2].replace(/[ \t]+$/, '');
+    let open = false, close = false;
+    if(body.charAt(0) === '|'){ open = true; body = body.slice(1); }
+    if(body.length && body.charAt(body.length - 1) === '|' && body.charAt(body.length - 2) !== '\\'){
+      close = true; body = body.slice(0, -1);
+    }
+    const cells = []; let cur = '', tick = false;
+    for(let k = 0; k < body.length; k++){
+      const ch = body[k];
+      if(ch === '`') tick = !tick;
+      if(ch === '|' && !tick && body[k-1] !== '\\'){ cells.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    cells.push(cur);
+    return { lead, open, close, cells };
+  }
+  function rowJoin(p){ return p.lead + (p.open ? '|' : '') + p.cells.join('|') + (p.close ? '|' : ''); }
+
+  function fmtTable(rows, lead){
+    const n = Math.max.apply(null, rows.map(r => r.cells.length));
+    rows.forEach(r => { while(r.cells.length < n) r.cells.push('   '); });
+    const w = [];
+    for(let k = 0; k < n; k++){
+      let mx = 3;
+      rows.forEach((r, ri) => { if(ri !== 1) mx = Math.max(mx, r.cells[k].trim().length); });
+      w[k] = mx;
+    }
+    return rows.map((r, ri) => {
+      const cells = r.cells.map((c, k) => {
+        const t = c.trim();
+        if(ri === 1){
+          const l = t.charAt(0) === ':', rt = t.charAt(t.length - 1) === ':';
+          return ' ' + (l ? ':' : '') + '-'.repeat(Math.max(1, w[k] - (l?1:0) - (rt?1:0))) + (rt ? ':' : '') + ' ';
+        }
+        return ' ' + t + ' '.repeat(Math.max(0, w[k] - t.length)) + ' ';
+      });
+      return lead + '|' + cells.join('|') + '|';
+    });
+  }
+
+  /* ---------- commit an edited block back to the markdown ---------- */
+  function commitCell(el){
+    const ln = +el.dataset.ls, ci = +el.dataset.ci;
+    if(!isFinite(ln) || !isFinite(ci)) return;
+    const lines = srcLines();
+    if(lines[ln] == null) return;
+    const p = rowParts(lines[ln]);
+    while(p.cells.length <= ci) p.cells.push('   ');
+    p.cells[ci] = ' ' + ser(el, true).replace(/\n+/g, ' ').trim() + ' ';
+    lines[ln] = rowJoin(p);
+    applyLines(lines);
+  }
+
+  function commit(el){
+    if(!el || !el.isConnected || !state.edit) return;
+    const tag = el.tagName.toLowerCase();
+    if(tag === 'td' || tag === 'th') return commitCell(el);
+    const host = tag === 'code' ? el.parentElement : el;
+    const ls = +host.dataset.ls, le = +host.dataset.le;
+    if(!isFinite(ls) || !isFinite(le)) return;
+    const lines = srcLines();
+    // for a not-yet-existing block (le < ls) take the prefix from the line above it
+    const first = ((le < ls ? lines[ls - 1] : lines[ls]) || '');
+    let newLines;
+
+    if(tag === 'code'){
+      const pfx = host.dataset.indent
+        ? ((first.match(/^([ \t]*)/) || ['','    '])[1] || '    ')
+        : prefixOf(first, 'p').pfx;
+      const body = el.textContent.replace(/\n$/, '');
+      newLines = body.split('\n').map(l => (pfx + l).replace(/[ \t]+$/, ''));
+      if(newLines.length === 1 && newLines[0] === '' && le < ls) newLines = [];
+    } else {
+      const isLi = el.classList.contains('itx');
+      const kind = /^h[1-6]$/.test(tag) ? 'h' : (isLi ? 'li' : 'p');
+      const p = prefixOf(first, kind);
+      const cont = isLi ? p.quote + ' '.repeat(Math.max(0, p.pfx.length - p.quote.length)) : p.pfx;
+      const text = ser(el, false).replace(/[ \t]+$/gm, '').replace(/^\n+|\n+$/g, '');
+
+      if(host.dataset.setext && le === ls + 1 && lines[le] != null){
+        newLines = [p.pfx + text, lines[le]];
+      } else {
+        const segs = text.split('\n');
+        let bodyLines;
+        if(segs.length > 1){
+          bodyLines = segs.map((s, k) => k < segs.length - 1 ? s + '  ' : s);
+        } else if(le > ls && kind !== 'h'){
+          bodyLines = wrapText(text, Math.min(120, Math.max(60, longestLine(lines, ls, le))) - cont.length);
+        } else {
+          bodyLines = [text];
+        }
+        newLines = bodyLines.map((s, k) => {
+          const line = (k === 0 ? p.pfx : cont) + s;
+          return /\S {2}$/.test(line) ? line : line.replace(/[ \t]+$/, '');
+        });
+      }
+    }
+    spliceSource(ls, le, newLines, host);
+  }
+  function longestLine(lines, a, b){
+    let w = 0;
+    for(let k = a; k <= b; k++) w = Math.max(w, (lines[k] || '').length);
+    return w;
+  }
+  const dirtyEls = new Set();
+  function queueCommit(el, ms){
+    dirtyEls.add(el);
+    clearTimeout(commitT);
+    commitT = setTimeout(runCommits, ms == null ? 350 : ms);
+  }
+  function runCommits(){
+    commitT = null;
+    const els = Array.from(dirtyEls); dirtyEls.clear();
+    const lineOf = e => { const h = e.tagName === 'CODE' ? e.parentElement : e; return h ? (+h.dataset.ls || 0) : 0; };
+    els.sort((a, b) => lineOf(a) - lineOf(b));   // top-down, so line shifts stay consistent
+    els.forEach(commit);
+  }
+  function flushCommit(){
+    if(commitT){ clearTimeout(commitT); commitT = null; runCommits(); }
+  }
+  // write the block being edited back to the source right now (before save/export)
+  function commitActive(){
+    if(!state.edit) return;
+    const a = document.activeElement;
+    flushCommit();
+    if(a && a.classList && a.classList.contains('ed') && preview.contains(a)) commit(a);
+  }
+
+  /* ---------- caret helpers ---------- */
+  function placeCaret(el, atEnd){
+    if(!el) return;
+    el.focus();
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(!atEnd);
+      const s = window.getSelection();
+      s.removeAllRanges(); s.addRange(r);
+    } catch(err){}
+  }
+  function caretParts(el){
+    const sel = window.getSelection();
+    if(!sel.rangeCount || !sel.anchorNode || !el.contains(sel.anchorNode)) return null;
+    const r = sel.getRangeAt(0);
+    const a = document.createRange(); a.selectNodeContents(el); a.setEnd(r.startContainer, r.startOffset);
+    const b = document.createRange(); b.selectNodeContents(el); b.setStart(r.endContainer, r.endOffset);
+    const d1 = document.createElement('div'); d1.appendChild(a.cloneContents());
+    const d2 = document.createElement('div'); d2.appendChild(b.cloneContents());
+    return { before: ser(d1, false).trim(), after: ser(d2, false).trim() };
+  }
+  function focusPending(){
+    if(!pending || !state.edit) return;
+    const p = pending; pending = null;
+    let el = null;
+    if(p.ci != null) el = preview.querySelector('[data-ls="' + p.ln + '"][data-ci="' + p.ci + '"]');
+    if(!el){
+      const all = preview.querySelectorAll(EDITABLE);
+      for(let k = 0; k < all.length; k++){
+        const n = all[k], host = n.tagName === 'CODE' ? n.parentElement : n;
+        const a = +host.dataset.ls, b = +host.dataset.le;
+        if(isFinite(a) && p.ln >= a && p.ln <= Math.max(a, b)){ el = n; break; }
+      }
+    }
+    if(el){ placeCaret(el, !!p.end); try { el.scrollIntoView({ block:'nearest' }); } catch(e){} }
+  }
+
+  /* ---------- structural edits ---------- */
+  function onEnter(el, e){
+    const tag = el.tagName.toLowerCase();
+    if(tag === 'code') return;                       // plain newline inside code blocks
+    if(tag === 'td' || tag === 'th'){
+      e.preventDefault(); flushCommit(); commitCell(el); moveCell(el, 'down'); return;
+    }
+    const parts = caretParts(el);
+    if(!parts) return;                                  // caret unknown → leave the block alone
+    e.preventDefault();
+    const ls = +el.dataset.ls, le = +el.dataset.le;
+    if(!isFinite(ls)) return;
+    flushCommit();
+    const lines = srcLines();
+    const first = lines[ls] || '';
+    const isLi = el.classList.contains('itx');
+    const kind = /^h[1-6]$/.test(tag) ? 'h' : (isLi ? 'li' : 'p');
+    const p = prefixOf(first, kind);
+    const mk = first.slice(p.quote.length).match(/^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(\[[ xX]\][ \t]+)?/);
+    const nextMarker = () => {
+      let m = mk ? mk[2] : '-';
+      if(/^\d/.test(m)) m = (parseInt(m, 10) + 1) + m.slice(-1);
+      return p.quote + (mk ? mk[1] : '') + m + (mk ? mk[3] : ' ') + (mk && mk[4] ? '[ ] ' : '');
+    };
+    const trimKeepBreak = l => /\S {2}$/.test(l) ? l : l.replace(/[ \t]+$/, '');
+
+    // --- caret at the end: start a fresh block without re-rendering everything
+    if(parts.after === ''){
+      if(isLi && parts.before === ''){                  // empty item → end the list
+        const ln2 = srcLines(); ln2[ls] = ''; applyLines(ln2);
+        const li = el.closest('li'), list = li && li.parentElement;
+        if(list){
+          li.remove();
+          const np = synthBlock('p', ls + 1, ls);
+          list.parentNode.insertBefore(np, list.nextSibling);
+          placeCaret(np, false);
+        }
+        return;
+      }
+      const ins = le + 1;
+      if(isLi){
+        const marker = nextMarker();
+        spliceSource(ins, ins - 1, [marker], null);
+        const span = synthBlock('span', ins, ins, 'itx');
+        const li = el.closest('li');
+        const nli = document.createElement('li');
+        nli.appendChild(span);
+        li.parentNode.insertBefore(nli, li.nextSibling);
+        placeCaret(span, false);
+      } else {
+        spliceSource(ins, ins - 1, [p.quote.replace(/[ \t]+$/, '')], null);
+        const np = synthBlock('p', ins + 1, ins);
+        el.parentNode.insertBefore(np, el.nextSibling);
+        placeCaret(np, false);
+      }
+      return;
+    }
+
+    // --- caret at the start or in the middle: rewrite the source and re-render
+    let nl;
+    if(parts.before === '' && !isLi){
+      nl = [p.quote.replace(/[ \t]+$/, ''), p.pfx + parts.after];
+    } else if(isLi){
+      nl = [p.pfx + parts.before, nextMarker() + parts.after];
+    } else if(kind === 'h'){
+      nl = [p.pfx + parts.before, p.quote.replace(/[ \t]+$/, ''), p.quote + parts.after];
+    } else {
+      nl = [p.pfx + parts.before, p.quote.replace(/[ \t]+$/, ''), p.pfx + parts.after];
+    }
+    nl = nl.map(trimKeepBreak);
+    spliceSource(ls, le, nl, null, true);
+    pending = { ln: ls + nl.length - 1 };
+    renderNow();
+  }
+
+  // a block that exists in the DOM before it exists in the file
+  // (data-le < data-ls marks "insert at data-ls" — commit() handles that)
+  function synthBlock(tagName, ls, le, cls){
+    const el = document.createElement(tagName);
+    el.dataset.ls = ls; el.dataset.le = le;
+    el.className = 'ed' + (cls ? ' ' + cls : '');
+    el.setAttribute('contenteditable', 'true');
+    return el;
+  }
+
+  function onBackspace(el, e){
+    const tag = el.tagName.toLowerCase();
+    if(tag === 'td' || tag === 'th' || tag === 'code') return;
+    if(el.textContent.replace(/ /g, ' ').trim() !== '') return;
+    const ls = +el.dataset.ls, le = +el.dataset.le;
+    if(!isFinite(ls)) return;
+    e.preventDefault(); flushCommit();
+    const lines = srcLines();
+    lines.splice(ls, Math.max(1, le - ls + 1));
+    applyLines(lines);
+    pending = { ln: Math.max(0, ls - 1), end: true };
+    renderNow();
+  }
+
+  function moveCell(el, dir){
+    const table = el.closest('table'); if(!table) return;
+    const rows = Array.from(table.querySelectorAll('tr'));
+    const row = el.parentElement;
+    const ri = rows.indexOf(row), ci = Array.from(row.children).indexOf(el);
+    let target = null;
+    if(dir === 'next'){
+      target = row.children[ci + 1] || (rows[ri + 1] && rows[ri + 1].children[0]);
+      if(!target) return tableOp('rowBelow', el);
+    } else if(dir === 'prev'){
+      target = row.children[ci - 1] ||
+               (rows[ri - 1] && rows[ri - 1].children[rows[ri - 1].children.length - 1]);
+    } else if(dir === 'down'){
+      target = rows[ri + 1] && rows[ri + 1].children[ci];
+      if(!target) return tableOp('rowBelow', el);
+    } else if(dir === 'up'){
+      target = rows[ri - 1] && rows[ri - 1].children[ci];
+    }
+    if(target) placeCaret(target, true);
+  }
+
+  function tableOp(op, cellArg){
+    const cell = cellArg || lastCell;
+    if(!cell || !cell.isConnected) return;
+    const table = cell.closest('table');
+    const ls = +table.dataset.ls, le = +table.dataset.le;
+    if(!isFinite(ls) || !isFinite(le)) return;
+    flushCommit(); commitCell(cell);
+    const lines = srcLines();
+    const rows = [];
+    for(let k = ls; k <= le; k++) rows.push(rowParts(lines[k]));
+    if(rows.length < 2) return;
+    const lead = rows[0].lead;
+    const ri = (+cell.dataset.ls) - ls;
+    const ci = +cell.dataset.ci;
+    const n = Math.max.apply(null, rows.map(r => r.cells.length));
+    const blank = () => { const a = []; for(let k = 0; k < n; k++) a.push('   '); return a; };
+    let fLn = +cell.dataset.ls, fCi = ci, at;
+
+    switch(op){
+      case 'rowAbove':
+        at = Math.max(2, ri);
+        rows.splice(at, 0, { lead, open:true, close:true, cells: blank() });
+        fLn = ls + at; break;
+      case 'rowBelow':
+        at = Math.max(2, ri + 1);
+        rows.splice(at, 0, { lead, open:true, close:true, cells: blank() });
+        fLn = ls + at; break;
+      case 'rowDel':
+        if(ri < 2){ toast('Header rows can’t be deleted'); return; }
+        if(rows.length <= 3){ toast('A table needs at least one body row'); return; }
+        rows.splice(ri, 1);
+        fLn = ls + Math.min(ri, rows.length - 1); break;
+      case 'colLeft':
+        rows.forEach((r, k) => r.cells.splice(ci, 0, k === 1 ? ' --- ' : '   '));
+        fCi = ci; break;
+      case 'colRight':
+        rows.forEach((r, k) => r.cells.splice(ci + 1, 0, k === 1 ? ' --- ' : '   '));
+        fCi = ci + 1; break;
+      case 'colDel':
+        if(n <= 1){ toast('A table needs at least one column'); return; }
+        rows.forEach(r => r.cells.splice(ci, 1));
+        fCi = Math.max(0, ci - 1); break;
+      case 'alignL': case 'alignC': case 'alignR': {
+        const bare = rows[1].cells[ci].trim().replace(/:/g, '') || '---';
+        rows[1].cells[ci] = op === 'alignL' ? ' :' + bare + ' '
+                          : op === 'alignC' ? ' :' + bare + ': '
+                          : ' ' + bare + ': ';
+        break;
+      }
+      default: return;
+    }
+    spliceSource(ls, le, fmtTable(rows, lead), null, true);
+    pending = { ln: fLn, ci: fCi };
+    renderNow();
+  }
+
+  /* ---------- inline formatting ---------- */
+  function hostOf(node){
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    return el ? el.closest('.ed') : null;
+  }
+  function wrapInline(tagName){
+    const sel = window.getSelection();
+    if(!sel.rangeCount || sel.isCollapsed) return;
+    const host = hostOf(sel.anchorNode); if(!host) return;
+    const r = sel.getRangeAt(0);
+    const el = document.createElement(tagName);
+    try { r.surroundContents(el); }
+    catch(err){ el.appendChild(r.extractContents()); r.insertNode(el); }
+    const nr = document.createRange(); nr.selectNodeContents(el);
+    sel.removeAllRanges(); sel.addRange(nr);
+    queueCommit(host, 0);
+  }
+  function makeLink(){
+    const sel = window.getSelection();
+    if(!sel.rangeCount) return;
+    const host = hostOf(sel.anchorNode); if(!host) return;
+    if(sel.isCollapsed){ toast('Select the text to link first'); return; }
+    const url = window.prompt('Link URL', 'https://');
+    if(!url) return;
+    document.execCommand('createLink', false, url);
+    queueCommit(host, 0);
+  }
+
+  /* ---------- table toolbar ---------- */
+  function updateTblBar(){
+    const bar = $('tblBar');
+    if(!state.edit || !lastCell || !lastCell.isConnected){ bar.classList.remove('on'); return; }
+    const table = lastCell.closest('table');
+    if(!table){ bar.classList.remove('on'); return; }
+    bar.classList.add('on');
+    const rp = $('rightPane').getBoundingClientRect();
+    const tb = table.getBoundingClientRect();
+    if(tb.bottom < rp.top || tb.top > rp.bottom){ bar.classList.remove('on'); return; }
+    const top = tb.top - rp.top - bar.offsetHeight - 8;
+    bar.style.top = Math.max(34, top) + 'px';
+    bar.style.left = Math.max(6, Math.min(tb.left - rp.left, rp.width - bar.offsetWidth - 10)) + 'px';
+  }
+  $('tblBar').addEventListener('mousedown', e => e.preventDefault());
+  $('tblBar').addEventListener('click', e => {
+    const b = e.target.closest('button'); if(!b) return;
+    tableOp(b.dataset.op);
+  });
+  prevScroll.addEventListener('scroll', updateTblBar, { passive:true });
+
+  /* ---------- wiring ---------- */
+  function applyEditMode(){
+    document.body.classList.toggle('edit', state.edit);
+    preview.querySelectorAll('.ed').forEach(el => {
+      el.removeAttribute('contenteditable'); el.classList.remove('ed');
+    });
+    preview.querySelectorAll('li.task input').forEach(cb => { cb.disabled = !state.edit; });
+    if(!state.edit){ lastCell = null; updateTblBar(); return; }
+    preview.querySelectorAll(EDITABLE).forEach(el => {
+      el.setAttribute('contenteditable', 'true');
+      el.classList.add('ed');
+      if(el.tagName === 'CODE') el.spellcheck = false;
+    });
+    updateTblBar();
+  }
+
+  preview.addEventListener('input', e => {
+    if(!state.edit) return;
+    const el = hostOf(e.target); if(!el) return;
+    queueCommit(el);
+  });
+  preview.addEventListener('focusout', e => {
+    if(!state.edit) return;
+    const el = e.target && e.target.classList && e.target.classList.contains('ed') ? e.target : hostOf(e.target);
+    if(el){ flushCommit(); commit(el); }
+  });
+  preview.addEventListener('focusin', e => {
+    if(!state.edit) return;
+    const c = e.target.closest ? e.target.closest('td.ed, th.ed') : null;
+    lastCell = c;
+    updateTblBar();
+  });
+  preview.addEventListener('paste', e => {
+    if(!state.edit) return;
+    const el = hostOf(e.target); if(!el) return;
+    e.preventDefault();
+    const txt = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false,
+      el.tagName === 'CODE' ? txt : txt.replace(/\s*\n\s*/g, ' '));
+  });
+  preview.addEventListener('change', e => {
+    const cb = e.target;
+    if(!state.edit || !cb.matches || !cb.matches('li.task input')) return;
+    const ln = +cb.dataset.tls;
+    const lines = srcLines();
+    if(!isFinite(ln) || ln < 0 || lines[ln] == null) return;
+    lines[ln] = lines[ln].replace(/\[[ xX]\]/, cb.checked ? '[x]' : '[ ]');
+    applyLines(lines);
+  });
+  preview.addEventListener('keydown', e => {
+    if(!state.edit) return;
+    const el = hostOf(e.target); if(!el) return;
+    const tag = el.tagName.toLowerCase();
+    const mod = e.ctrlKey || e.metaKey;
+    if(mod && !e.altKey){
+      const k = e.key.toLowerCase();
+      if(k === 'b'){ e.preventDefault(); document.execCommand('bold'); return; }
+      if(k === 'i'){ e.preventDefault(); document.execCommand('italic'); return; }
+      if(k === 'e'){ e.preventDefault(); wrapInline('code'); return; }
+      if(k === 'k'){ e.preventDefault(); makeLink(); return; }
+      return;
+    }
+    if(e.key === 'Tab' && (tag === 'td' || tag === 'th')){
+      e.preventDefault(); flushCommit(); commitCell(el);
+      moveCell(el, e.shiftKey ? 'prev' : 'next'); return;
+    }
+    if((e.key === 'ArrowDown' || e.key === 'ArrowUp') && (tag === 'td' || tag === 'th')){
+      e.preventDefault(); flushCommit(); commitCell(el);
+      moveCell(el, e.key === 'ArrowDown' ? 'down' : 'up'); return;
+    }
+    if(e.key === 'Enter'){
+      if(e.shiftKey){
+        if(tag !== 'code'){ e.preventDefault(); document.execCommand('insertLineBreak'); }
+        return;
+      }
+      onEnter(el, e); return;
+    }
+    if(e.key === 'Backspace'){ onBackspace(el, e); return; }
+  });
+
+  $('bEdit').onclick = () => {
+    state.edit = !state.edit;
+    $('bEdit').classList.toggle('on', state.edit);
+    LS.set('edit', state.edit);
+    applyEditMode();
+    toast(state.edit ? 'Preview editing on' : 'Preview editing off');
+  };
+  try { document.execCommand('styleWithCSS', false, false); } catch(e){}
+
   /* ---------- boot ---------- */
   const SAMPLE = [
     '---',
@@ -1469,8 +2191,20 @@ const HL = (function(){
     '',
     '# Markdown Reader',
     '',
-    'Open a `.md` file with **Open**, or just drag one onto this window. The left pane is a',
-    'live editor; the right pane renders as you type. Everything runs locally in this one file.',
+    'Open a `.md` file with **Open**, or just drag one onto this window. Everything runs',
+    'locally in this one file — no server, no dependencies.',
+    '',
+    '## Two ways to edit',
+    '',
+    'Type in the **left** pane to write markdown by hand. Or click straight into the',
+    '**right** pane and edit it like a document — headings, paragraphs, list items, table',
+    'cells and code blocks are all live. Whatever you change there is written back into the',
+    'markdown source, touching only the lines you actually edited.',
+    '',
+    '> [!TIP]',
+    '> Click any cell below and type. Put the caret in a table and a toolbar appears for',
+    '> adding or deleting rows and columns and setting column alignment. `Tab` moves to',
+    '> the next cell, `Enter` moves down.',
     '',
     '## What it handles',
     '',
@@ -1484,8 +2218,11 @@ const HL = (function(){
     '',
     '- [x] Split view with synced scrolling',
     '- [x] Syntax-highlighted code blocks',
+    '- [x] Editing from either side',
     '- [ ] Anything else you want added',
     '  - nested items work too',
+    '',
+    'Tick a box above and watch the `[ ]` on the left flip to `[x]`.',
     '',
     '> [!NOTE]',
     '> Blockquote callouts (`NOTE`, `TIP`, `WARNING`, `CAUTION`) get styled automatically.',
@@ -1510,8 +2247,9 @@ const HL = (function(){
     '',
     '## Shortcuts',
     '',
-    '<kbd>Ctrl</kbd>+<kbd>O</kbd> open · <kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>Ctrl</kbd>+<kbd>B</kbd> bold ·',
-    '<kbd>Ctrl</kbd>+<kbd>I</kbd> italic · <kbd>Ctrl</kbd>+<kbd>K</kbd> link · <kbd>Ctrl</kbd>+<kbd>\\</kbd> toggle preview',
+    '`Ctrl+O` open · `Ctrl+S` save · `Ctrl+B` bold · `Ctrl+I` italic · `Ctrl+E` code ·',
+    '`Ctrl+K` link · `Ctrl+\\` toggle preview. They work in both panes. In the preview,',
+    '`Shift+Enter` makes a hard line break and `Ctrl+click` follows a link.',
     '',
     '[^1]: Footnotes link both ways — click the arrow to jump back.'
   ].join('\n');
@@ -1522,7 +2260,9 @@ const HL = (function(){
   state.wrap     = LS.get('wrap', false);
   state.hlSrc    = LS.get('hlSrc', true);
   state.allowHtml= LS.get('allowHtml', false);
+  state.edit     = LS.get('edit', true);
   setTheme(state.theme);
+  $('bEdit').classList.toggle('on', state.edit);
   $('bSync').classList.toggle('on', state.sync);
   $('bWrap').classList.toggle('on', state.wrap);
   $('bHl').classList.toggle('on', state.hlSrc);
