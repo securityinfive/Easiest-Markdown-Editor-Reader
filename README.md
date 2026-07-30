@@ -3,7 +3,7 @@ A single stand alone HTML page to open, read, create, save, export and edit Mark
 
 # Markdown Reader
 
-A single-file markdown reader and two-way editor. Open `markdown-reader.html` in any
+A single-file markdown reader and two-way editor. Open `easiest-markdown-editor-reader.html` in any
 browser — no server, no build step, no dependencies, no network access required.
 
 Left pane: the markdown source, with line numbers and syntax highlighting.
